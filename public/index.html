@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Mahjong — Play with a Friend</title>
+<title>Mahjong!</title>
 <style>
   :root {
     --char-color: #e06c6c;
@@ -786,8 +786,8 @@ let session = null;
 let reconnectAttempts = 0;
 let reconnectTimer = null;
 
-function saveSession(room, seat) {
-  session = {room, seat};
+function saveSession(room, seat, token) {
+  session = {room, seat, token};
   try { sessionStorage.setItem(SESSION_KEY, JSON.stringify(session)); } catch (e) {}
 }
 
@@ -825,7 +825,7 @@ function connect() {
     if (saved && saved.room) {
       session = saved;
       setBanner("Reconnecting to your game\u2026");
-      sendMsg({type: "rejoin", room: saved.room, seat: saved.seat});
+      sendMsg({type: "rejoin", room: saved.room, seat: saved.seat, token: saved.token});
       return;
     }
     setBanner("");
@@ -870,7 +870,7 @@ document.addEventListener("visibilitychange", () => {
 function handleServerMessage(data) {
   switch (data.type) {
     case "joined": {
-      saveSession(data.room, data.seat);
+      saveSession(data.room, data.seat, data.token);
       setBanner("");
       if (data.waiting) {
         const link = `${location.origin}${location.pathname}?room=${data.room}`;
