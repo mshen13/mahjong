@@ -5,6 +5,7 @@ import asyncio
 import json
 import os
 import random
+import secrets
 import string
 from pathlib import Path
 
@@ -142,6 +143,7 @@ class Player:
         self.melds = []
         self.discards = []
         self.ws = None
+        self.token = None  # proves seat ownership when reclaiming it
 
 
 class Room:
@@ -419,9 +421,16 @@ async def handle_message(ws, ctx, data):
         room = Room(code)
         ROOMS[code] = room
         room.players[0].ws = ws
+        room.players[0].token = secrets.token_urlsafe(16)
         ctx["room"] = room
         ctx["seat"] = 0
-        await send_json(ws, {"type": "joined", "room": code, "seat": 0, "waiting": True})
+        await send_json(ws, {
+            "type": "joined",
+            "room": code,
+            "seat": 0,
+            "waiting": True,
+            "token": room.players[0].token,
+        })
         return
 
     if msg_type == "join_room":
@@ -437,9 +446,16 @@ async def handle_message(ws, ctx, data):
             await send_json(ws, {"type": "error", "message": "That room is already full."})
             return
         room.players[1].ws = ws
+        room.players[1].token = secrets.token_urlsafe(16)
         ctx["room"] = room
         ctx["seat"] = 1
-        await send_json(ws, {"type": "joined", "room": code, "seat": 1, "waiting": False})
+        await send_json(ws, {
+            "type": "joined",
+            "room": code,
+            "seat": 1,
+            "waiting": False,
+            "token": room.players[1].token,
+        })
         await send_json(room.players[0].ws, {"type": "opponent_joined"})
         room.started = True
         asyncio.create_task(run_game(room))
@@ -453,10 +469,14 @@ async def handle_message(ws, ctx, data):
             await send_json(ws, {"type": "rejoin_failed"})
             return
         player = room.players[seat]
-        if player.ws is not None and not player.ws.closed:
+        token = data.get("token")
+        if not player.token or token != player.token:
             await send_json(ws, {"type": "rejoin_failed"})
             return
+        stale = player.ws
         player.ws = ws
+        if stale is not None and not stale.closed:
+            asyncio.create_task(stale.close())
         ctx["room"] = room
         ctx["seat"] = seat
         await send_json(ws, {
@@ -464,6 +484,7 @@ async def handle_message(ws, ctx, data):
             "room": code,
             "seat": seat,
             "waiting": not room.started,
+            "token": player.token,
         })
         if room.started:
             await broadcast_log(room, [f"{player.name} reconnected."])
