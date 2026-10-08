@@ -275,7 +275,9 @@ async def request_call_action(room, discarder_idx, tile, player, is_next_player)
                 continue
 
             if action == "chow":
-                if not is_next_player:
+                # Out of turn, a chow is only allowed when it completes the hand (a win).
+                completes_hand = is_winning_hand(player.hand + [tile], len(player.melds))
+                if not is_next_player and not completes_hand:
                     error = "You can't chow this — only the player immediately after the discarder can chow."
                     continue
                 options = find_chow_options(player.hand, tile)
@@ -286,7 +288,7 @@ async def request_call_action(room, discarder_idx, tile, player, is_next_player)
                 if not valid:
                     error = "You can't chow this — you don't have two tiles to complete a run with it."
                     continue
-                return {"type": "chow", "pair": pair}
+                return {"type": "chow", "pair": pair, "win": not is_next_player}
     finally:
         room.pending_calls.pop(player.seat, None)
 
@@ -325,7 +327,9 @@ async def check_calls(room, discarder_idx, tile):
 
     human_call = await ask_humans_for_call(room, discarder_idx, tile, next_idx)
 
-    if human_call and human_call["result"]["type"] == "win":
+    if human_call and (
+        human_call["result"]["type"] == "win" or human_call["result"].get("win")
+    ):
         return {"kind": "win", "idx": human_call["idx"]}
 
     # Bots win automatically; humans only win by declaring it above.

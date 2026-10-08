@@ -665,7 +665,7 @@ function renderWaiting() {
   controlsEl.appendChild(prompt);
 }
 
-function renderCallButtons(discarderName, tile, errorText, canWin) {
+function renderCallButtons(discarderName, tile, errorText, canWin, canChow) {
   clearControls();
   controlsEl.classList.add("call-active");
   const headerRow = document.createElement("div");
@@ -684,13 +684,16 @@ function renderCallButtons(discarderName, tile, errorText, canWin) {
   }
   const row = document.createElement("div");
   row.className = "tile-row";
-  for (const label of canWin ? ["Win", "Pong", "Chow", "Skip"] : ["Pong", "Chow", "Skip"]) {
+  const labels = ["Pong", "Skip"];
+  if (canChow) labels.splice(1, 0, "Chow");
+  if (canWin) labels.unshift("Win");
+  for (const label of labels) {
     const btn = document.createElement("button");
     btn.className = label === "Skip" ? "action secondary" : "action";
     btn.textContent = label;
     btn.onclick = () => {
       if (label === "Chow") {
-        renderChowPicker(tile, discarderName, canWin);
+        renderChowPicker(tile, discarderName, canWin, canChow);
       } else {
         sendMsg({type: "call_action", action: label.toLowerCase()});
         renderWaiting();
@@ -701,7 +704,7 @@ function renderCallButtons(discarderName, tile, errorText, canWin) {
   controlsEl.appendChild(row);
 }
 
-function renderChowPicker(tile, discarderName, canWin) {
+function renderChowPicker(tile, discarderName, canWin, canChow) {
   clearControls();
   controlsEl.classList.add("call-active");
   const prompt = document.createElement("div");
@@ -727,7 +730,7 @@ function renderChowPicker(tile, discarderName, canWin) {
   const back = document.createElement("button");
   back.className = "action secondary";
   back.textContent = "Back";
-  back.onclick = () => renderCallButtons(discarderName, tile, "", canWin);
+  back.onclick = () => renderCallButtons(discarderName, tile, "", canWin, canChow);
   controlsEl.appendChild(row);
   controlsEl.appendChild(back);
 }
@@ -942,7 +945,8 @@ function handleServerMessage(data) {
       break;
     }
     case "await_call": {
-      renderCallButtons(seatNameFor(data.discarderIdx), data.tile, data.error || "", data.canWin);
+      const canChow = (data.isNextPlayer || data.canWin) && findChowOptions(currentHand, data.tile).length > 0;
+      renderCallButtons(seatNameFor(data.discarderIdx), data.tile, data.error || "", data.canWin, canChow);
       break;
     }
     case "call_closed": {
