@@ -665,7 +665,7 @@ function renderWaiting() {
   controlsEl.appendChild(prompt);
 }
 
-function renderCallButtons(discarderName, tile, errorText) {
+function renderCallButtons(discarderName, tile, errorText, canWin) {
   clearControls();
   controlsEl.classList.add("call-active");
   const headerRow = document.createElement("div");
@@ -684,13 +684,13 @@ function renderCallButtons(discarderName, tile, errorText) {
   }
   const row = document.createElement("div");
   row.className = "tile-row";
-  for (const label of ["Pong", "Chow", "Skip"]) {
+  for (const label of canWin ? ["Win", "Pong", "Chow", "Skip"] : ["Pong", "Chow", "Skip"]) {
     const btn = document.createElement("button");
     btn.className = label === "Skip" ? "action secondary" : "action";
     btn.textContent = label;
     btn.onclick = () => {
       if (label === "Chow") {
-        renderChowPicker(tile, discarderName);
+        renderChowPicker(tile, discarderName, canWin);
       } else {
         sendMsg({type: "call_action", action: label.toLowerCase()});
         renderWaiting();
@@ -701,7 +701,7 @@ function renderCallButtons(discarderName, tile, errorText) {
   controlsEl.appendChild(row);
 }
 
-function renderChowPicker(tile, discarderName) {
+function renderChowPicker(tile, discarderName, canWin) {
   clearControls();
   controlsEl.classList.add("call-active");
   const prompt = document.createElement("div");
@@ -727,7 +727,7 @@ function renderChowPicker(tile, discarderName) {
   const back = document.createElement("button");
   back.className = "action secondary";
   back.textContent = "Back";
-  back.onclick = () => renderCallButtons(discarderName, tile, "");
+  back.onclick = () => renderCallButtons(discarderName, tile, "", canWin);
   controlsEl.appendChild(row);
   controlsEl.appendChild(back);
 }
@@ -923,6 +923,16 @@ function handleServerMessage(data) {
     }
     case "await_discard": {
       clearControls();
+      if (data.canWin) {
+        const winBtn = document.createElement("button");
+        winBtn.className = "action";
+        winBtn.textContent = "Win!";
+        winBtn.onclick = () => {
+          sendMsg({type: "declare_win"});
+          renderWaiting();
+        };
+        controlsEl.appendChild(winBtn);
+      }
       renderHand(currentHand, (tile) => {
         sendMsg({type: "discard", tile});
         const idx = currentHand.indexOf(tile);
@@ -932,7 +942,11 @@ function handleServerMessage(data) {
       break;
     }
     case "await_call": {
-      renderCallButtons(seatNameFor(data.discarderIdx), data.tile, data.error || "");
+      renderCallButtons(seatNameFor(data.discarderIdx), data.tile, data.error || "", data.canWin);
+      break;
+    }
+    case "call_closed": {
+      renderWaiting();
       break;
     }
     case "game_over": {

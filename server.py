@@ -154,6 +154,8 @@ class Room:
         self.pending = None  # {"kind": "discard"|"call", "seat": int}
         self.pending_future = None
         self.pending_payload = None  # last prompt sent, replayed on rejoin
+        # Call prompts are open to every eligible human at once: seat -> {"future", "payload"}
+        self.pending_calls = {}
         self.started = False
         self.finished = False
         self.lock = asyncio.Lock()
@@ -226,7 +228,10 @@ async def request_discard(room, player):
     fut = asyncio.get_event_loop().create_future()
     room.pending = {"kind": "discard", "seat": player.seat}
     room.pending_future = fut
-    room.pending_payload = {"type": "await_discard"}
+    room.pending_payload = {
+        "type": "await_discard",
+        "canWin": is_winning_hand(player.hand, len(player.melds)),
+    }
     await send_json(player.ws, room.pending_payload)
     tile = await fut
     room.pending = None
@@ -237,80 +242,115 @@ async def request_discard(room, player):
 
 async def request_call_action(room, discarder_idx, tile, player, is_next_player):
     error = ""
-    while True:
-        fut = asyncio.get_event_loop().create_future()
-        room.pending = {"kind": "call", "seat": player.seat}
-        room.pending_future = fut
-        room.pending_payload = {
-            "type": "await_call",
-            "discarderIdx": discarder_idx,
-            "tile": tile,
-            "isNextPlayer": is_next_player,
-            "error": error,
-        }
-        await send_json(player.ws, room.pending_payload)
-        msg = await fut
-        room.pending = None
-        room.pending_future = None
-        room.pending_payload = None
-        error = ""
-        action = msg.get("action")
+    try:
+        while True:
+            fut = asyncio.get_event_loop().create_future()
+            payload = {
+                "type": "await_call",
+                "discarderIdx": discarder_idx,
+                "tile": tile,
+                "isNextPlayer": is_next_player,
+                "canWin": is_winning_hand(player.hand + [tile], len(player.melds)),
+                "error": error,
+            }
+            room.pending_calls[player.seat] = {"future": fut, "payload": payload}
+            await send_json(player.ws, payload)
+            msg = await fut
+            error = ""
+            action = msg.get("action")
 
-        if action == "skip":
-            return {"type": "pass"}
+            if action == "skip":
+                return {"type": "pass"}
 
-        if action == "pong":
-            if player.hand.count(tile) >= 2:
-                return {"type": "pong"}
-            error = "You can't pong this — you don't have a pair of it."
-            continue
-
-        if action == "chow":
-            if not is_next_player:
-                error = "You can't chow this — only the player immediately after the discarder can chow."
+            if action == "win":
+                if is_winning_hand(player.hand + [tile], len(player.melds)):
+                    return {"type": "win"}
+                error = "That tile doesn't complete your hand."
                 continue
-            options = find_chow_options(player.hand, tile)
-            pair = msg.get("pair")
-            valid = pair is not None and any(
-                sorted(pair) == sorted(opt) for opt in options
-            )
-            if not valid:
-                error = "You can't chow this — you don't have two tiles to complete a run with it."
+
+            if action == "pong":
+                if player.hand.count(tile) >= 2:
+                    return {"type": "pong"}
+                error = "You can't pong this — you don't have a pair of it."
                 continue
-            return {"type": "chow", "pair": pair}
+
+            if action == "chow":
+                if not is_next_player:
+                    error = "You can't chow this — only the player immediately after the discarder can chow."
+                    continue
+                options = find_chow_options(player.hand, tile)
+                pair = msg.get("pair")
+                valid = pair is not None and any(
+                    sorted(pair) == sorted(opt) for opt in options
+                )
+                if not valid:
+                    error = "You can't chow this — you don't have two tiles to complete a run with it."
+                    continue
+                return {"type": "chow", "pair": pair}
+    finally:
+        room.pending_calls.pop(player.seat, None)
+
+
+async def ask_humans_for_call(room, discarder_idx, tile, next_idx):
+    """Prompt every human at once; the first valid pong/chow wins."""
+    humans = [room.players[i] for i in range(4) if i != discarder_idx and room.players[i].is_human]
+    tasks = {
+        asyncio.ensure_future(
+            request_call_action(room, discarder_idx, tile, p, p.seat == next_idx)
+        ): p
+        for p in humans
+    }
+    try:
+        while tasks:
+            done, _ = await asyncio.wait(tasks.keys(), return_when=asyncio.FIRST_COMPLETED)
+            for t in done:
+                player = tasks.pop(t)
+                result = t.result()
+                if result["type"] == "pass":
+                    continue
+                for other_task, other in tasks.items():
+                    other_task.cancel()
+                    await send_json(other.ws, {"type": "call_closed"})
+                tasks.clear()
+                return {"idx": player.seat, "result": result}
+        return None
+    finally:
+        for t in tasks:
+            t.cancel()
 
 
 async def check_calls(room, discarder_idx, tile):
     order = [(discarder_idx + i) % 4 for i in (1, 2, 3)]
+    next_idx = order[0]
 
+    human_call = await ask_humans_for_call(room, discarder_idx, tile, next_idx)
+
+    if human_call and human_call["result"]["type"] == "win":
+        return {"kind": "win", "idx": human_call["idx"]}
+
+    # Bots win automatically; humans only win by declaring it above.
     for idx in order:
         p = room.players[idx]
-        if is_winning_hand(p.hand + [tile], len(p.melds)):
+        if not p.is_human and is_winning_hand(p.hand + [tile], len(p.melds)):
             return {"kind": "win", "idx": idx}
 
+    # A pong outranks a chow, so a bot's pong beats a human's chow.
+    if human_call and human_call["result"]["type"] == "pong":
+        return {"kind": "pong", "idx": human_call["idx"]}
+
     for idx in order:
         p = room.players[idx]
-        if p.is_human:
-            continue
-        if p.hand.count(tile) >= 2:
+        if not p.is_human and p.hand.count(tile) >= 2:
             return {"kind": "pong", "idx": idx}
 
-    next_idx = order[0]
+    if human_call:
+        return {"kind": "chow", "idx": human_call["idx"], "extra": human_call["result"]["pair"]}
+
     next_player = room.players[next_idx]
     if not next_player.is_human:
         options = find_chow_options(next_player.hand, tile)
         if options:
             return {"kind": "chow", "idx": next_idx, "extra": options[0]}
-
-    for idx in order:
-        p = room.players[idx]
-        if not p.is_human:
-            continue
-        result = await request_call_action(room, discarder_idx, tile, p, idx == next_idx)
-        if result["type"] == "pong":
-            return {"kind": "pong", "idx": idx}
-        if result["type"] == "chow":
-            return {"kind": "chow", "idx": idx, "extra": result["pair"]}
 
     return None
 
@@ -373,12 +413,15 @@ async def run_game(room):
 
             await broadcast_state(room)
 
-            if is_winning_hand(player.hand, len(player.melds)):
+            if not player.is_human and is_winning_hand(player.hand, len(player.melds)):
                 await end_game(room, current_idx, "self-draw")
                 return
 
         if player.is_human:
             discard = await request_discard(room, player)
+            if discard is None:  # declared a self-draw win
+                await end_game(room, current_idx, "self-draw")
+                return
         else:
             discard = ai_discard_choice(player.hand)
 
@@ -492,11 +535,21 @@ async def handle_message(ws, ctx, data):
             # Re-send the prompt they were on, or their turn would hang forever.
             if room.pending and room.pending["seat"] == seat and room.pending_payload:
                 await send_json(ws, room.pending_payload)
+            call = room.pending_calls.get(seat)
+            if call:
+                await send_json(ws, call["payload"])
         return
 
     room = ctx.get("room")
     seat = ctx.get("seat")
     if room is None or seat is None:
+        return
+
+    if msg_type == "declare_win":
+        if room.pending == {"kind": "discard", "seat": seat}:
+            player = room.players[seat]
+            if is_winning_hand(player.hand, len(player.melds)) and not room.pending_future.done():
+                room.pending_future.set_result(None)
         return
 
     if msg_type == "discard":
@@ -508,9 +561,9 @@ async def handle_message(ws, ctx, data):
         return
 
     if msg_type == "call_action":
-        if room.pending and room.pending == {"kind": "call", "seat": seat}:
-            if not room.pending_future.done():
-                room.pending_future.set_result(data)
+        call = room.pending_calls.get(seat)
+        if call and not call["future"].done():
+            call["future"].set_result(data)
         return
 
 
