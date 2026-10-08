@@ -14,6 +14,7 @@ from aiohttp import web, WSMsgType
 SUITS = ["C", "B", "O"]
 WINDS = ["EW", "SW", "WW", "NW"]
 HONOR_ORDER = WINDS
+AVATARS = ["rabbit", "monkey", "tiger", "cub"]
 SEAT_NAMES = ["Player 1", "Player 2", "Bot A", "Bot B"]
 DISCARD_ANIM_SECONDS = 1.9
 CALL_BANNER_SECONDS = 3.3
@@ -146,6 +147,7 @@ class Player:
         self.seat = seat
         self.is_human = is_human
         self.name = SEAT_NAMES[seat]
+        self.avatar = AVATARS[seat]
         self.hand = []
         self.melds = []
         self.discards = []
@@ -204,6 +206,7 @@ def public_player_view(p):
         "seat": p.seat,
         "name": p.name,
         "isHuman": p.is_human,
+        "avatar": p.avatar,
         "handCount": len(p.hand),
         "melds": p.melds,
         "discards": p.discards,
@@ -520,6 +523,8 @@ async def handle_message(ws, ctx, data):
         room.players[0].ws = ws
         room.players[0].token = secrets.token_urlsafe(16)
         room.players[0].name = clean_name(data.get("name"), SEAT_NAMES[0])
+        if data.get("avatar") in AVATARS:
+            room.players[0].avatar = data["avatar"]
         ctx["room"] = room
         ctx["seat"] = 0
         await send_json(ws, {
@@ -548,6 +553,12 @@ async def handle_message(ws, ctx, data):
         room.players[1].name = clean_name(
             data.get("name"), SEAT_NAMES[1], taken=[room.players[0].name, "Bot A", "Bot B"]
         )
+        # Guest gets their pick unless the host already has it; bots take whatever is left.
+        wanted = data.get("avatar")
+        free = [a for a in AVATARS if a != room.players[0].avatar]
+        room.players[1].avatar = wanted if wanted in free else free[0]
+        leftovers = [a for a in AVATARS if a not in (room.players[0].avatar, room.players[1].avatar)]
+        room.players[2].avatar, room.players[3].avatar = leftovers
         ctx["room"] = room
         ctx["seat"] = 1
         await send_json(ws, {
