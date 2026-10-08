@@ -48,6 +48,12 @@
     color: #fff;
     margin-right: 8px;
   }
+  #lobby input#nameInput {
+    text-transform: none;
+    letter-spacing: 0;
+    width: 220px;
+    margin-right: 0;
+  }
   #lobbyStatus { margin-top: 16px; font-size: 13px; color: #cfd6cf; min-height: 1.4em; }
   #shareLink {
     margin-top: 10px;
@@ -112,9 +118,29 @@
   #center {
     grid-area: center;
     display: flex;
+    flex-direction: column;
     align-items: center;
     justify-content: center;
+    gap: 10px;
   }
+  #centerActions {
+    max-width: 100%;
+    border: 2px solid transparent;
+    border-radius: 8px;
+    padding: 8px;
+    text-align: center;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  #centerActions:empty { display: none; }
+  #centerActions.call-active {
+    border-color: var(--honor-color);
+    background: rgba(0, 0, 0, 0.45);
+  }
+  #centerActions.call-active .prompt {
+    color: var(--honor-color);
+    font-weight: bold;
+  }
+  #centerActions .tile-row, #centerActions .call-header { justify-content: center; }
   #wall-count {
     color: #cfd6cf;
     font-size: 13px;
@@ -191,6 +217,20 @@
     padding: 10px 14px;
     margin-bottom: 0;
   }
+  #gameLayout { display: flex; gap: 14px; align-items: flex-start; }
+  #gameMain { flex: 1; min-width: 0; }
+  #gameLayout #log {
+    flex: 0 0 240px;
+    height: calc(100vh - 90px);
+    min-height: 300px;
+    margin-top: 0;
+    position: sticky;
+    top: 10px;
+  }
+  @media (max-width: 800px) {
+    #gameLayout { flex-direction: column-reverse; }
+    #gameLayout #log { flex: none; width: 100%; height: 160px; min-height: 0; position: static; }
+  }
   #log {
     background: #121317;
     border: 1px solid #33363f;
@@ -209,8 +249,8 @@
     gap: 3px;
     min-height: 1.5em;
   }
+  #controls:empty { display: none; }
   #controls {
-    min-height: 90px;
     border: 2px solid transparent;
     border-radius: 6px;
     padding: 8px;
@@ -290,6 +330,14 @@
     height: 74%;
     gap: 2px;
   }
+  .pip-grid.eight {
+    grid-template-columns: repeat(4, 1fr);
+    grid-template-rows: repeat(2, 1fr);
+    width: 88%;
+    height: 66%;
+    gap: 3px 2px;
+  }
+  .pip-grid.eight .stick-pip { width: 62%; height: 92%; }
   .dot-pip {
     border-radius: 50%;
     background: radial-gradient(circle at 30% 30%, #6fa8f5, #1a4fa0);
@@ -357,6 +405,8 @@
 
   <div id="lobby">
     <h2>Create a table or join one</h2>
+    <input id="nameInput" placeholder="Your name" maxlength="16" autocomplete="off">
+    <div class="divider" style="margin:14px 0;"></div>
     <button class="action" id="createBtn">Create Room</button>
     <div class="divider">— or —</div>
     <input id="roomCodeInput" placeholder="CODE" maxlength="4">
@@ -366,6 +416,9 @@
   </div>
 
   <div id="gameRoot" style="display:none;">
+    <div id="gameLayout">
+    <div id="log"></div>
+    <div id="gameMain">
     <div id="table">
       <div id="animLayer"></div>
       <div class="seat seat-top" id="seat-screen-top">
@@ -378,7 +431,7 @@
         <div class="seat-melds"></div>
         <div class="river"></div>
       </div>
-      <div id="center"><div id="wall-count"></div></div>
+      <div id="center"><div id="wall-count"></div><div id="centerActions"></div></div>
       <div class="seat seat-right" id="seat-screen-right">
         <div class="seat-header"><span class="seat-name"></span><div class="seat-backs"></div></div>
         <div class="seat-melds"></div>
@@ -392,7 +445,8 @@
     </div>
     <div id="hand"></div>
     <div id="controls"></div>
-    <div id="log"></div>
+    </div>
+    </div>
   </div>
 
 <script>
@@ -476,16 +530,26 @@ function createTileFace(tile, opts = {}) {
     } else {
       const grid = document.createElement("div");
       grid.className = "pip-grid";
-      const layout = DOT_LAYOUTS[rank];
-      for (let r = 0; r < 3; r++) {
-        for (let c = 0; c < 3; c++) {
+      const pipClass = suit === "O" ? "dot-pip" : "stick-pip";
+      if (rank === 8) {
+        grid.classList.add("eight");
+        for (let i = 0; i < 8; i++) {
           const cell = document.createElement("div");
-          if (layout.some(([lr, lc]) => lr === r && lc === c)) {
-            cell.className = suit === "O" ? "dot-pip" : "stick-pip";
-          }
-          cell.style.gridRow = r + 1;
-          cell.style.gridColumn = c + 1;
+          cell.className = pipClass;
           grid.appendChild(cell);
+        }
+      } else {
+        const layout = DOT_LAYOUTS[rank];
+        for (let r = 0; r < 3; r++) {
+          for (let c = 0; c < 3; c++) {
+            const cell = document.createElement("div");
+            if (layout.some(([lr, lc]) => lr === r && lc === c)) {
+              cell.className = pipClass;
+            }
+            cell.style.gridRow = r + 1;
+            cell.style.gridColumn = c + 1;
+            grid.appendChild(cell);
+          }
         }
       }
       face.appendChild(grid);
@@ -628,9 +692,13 @@ function showCallBanner(seatIdx, kind, tiles, seatName) {
   }, 3000);
 }
 
+const centerActionsEl = document.getElementById("centerActions");
+
 function clearControls() {
   controlsEl.innerHTML = "";
   controlsEl.classList.remove("call-active");
+  centerActionsEl.innerHTML = "";
+  centerActionsEl.classList.remove("call-active");
 }
 
 function renderHand(hand, onChoose) {
@@ -662,12 +730,12 @@ function renderWaiting() {
   const prompt = document.createElement("div");
   prompt.className = "prompt";
   prompt.textContent = "Waiting…";
-  controlsEl.appendChild(prompt);
+  centerActionsEl.appendChild(prompt);
 }
 
-function renderCallButtons(discarderName, tile, errorText, canWin, canChow) {
+function renderCallButtons(discarderName, tile, errorText, canWin, canChow, canKong) {
   clearControls();
-  controlsEl.classList.add("call-active");
+  centerActionsEl.classList.add("call-active");
   const headerRow = document.createElement("div");
   headerRow.className = "call-header";
   const prompt = document.createElement("div");
@@ -675,16 +743,17 @@ function renderCallButtons(discarderName, tile, errorText, canWin, canChow) {
   prompt.textContent = `${discarderName} discarded:`;
   headerRow.appendChild(prompt);
   headerRow.appendChild(createTileFace(tile));
-  controlsEl.appendChild(headerRow);
+  centerActionsEl.appendChild(headerRow);
   if (errorText) {
     const err = document.createElement("div");
     err.className = "call-error";
     err.textContent = errorText;
-    controlsEl.appendChild(err);
+    centerActionsEl.appendChild(err);
   }
   const row = document.createElement("div");
   row.className = "tile-row";
   const labels = ["Pong", "Skip"];
+  if (canKong) labels.splice(1, 0, "Kong");
   if (canChow) labels.splice(1, 0, "Chow");
   if (canWin) labels.unshift("Win");
   for (const label of labels) {
@@ -693,7 +762,7 @@ function renderCallButtons(discarderName, tile, errorText, canWin, canChow) {
     btn.textContent = label;
     btn.onclick = () => {
       if (label === "Chow") {
-        renderChowPicker(tile, discarderName, canWin, canChow);
+        renderChowPicker(tile, discarderName, canWin, canChow, canKong);
       } else {
         sendMsg({type: "call_action", action: label.toLowerCase()});
         renderWaiting();
@@ -701,16 +770,16 @@ function renderCallButtons(discarderName, tile, errorText, canWin, canChow) {
     };
     row.appendChild(btn);
   }
-  controlsEl.appendChild(row);
+  centerActionsEl.appendChild(row);
 }
 
-function renderChowPicker(tile, discarderName, canWin, canChow) {
+function renderChowPicker(tile, discarderName, canWin, canChow, canKong) {
   clearControls();
-  controlsEl.classList.add("call-active");
+  centerActionsEl.classList.add("call-active");
   const prompt = document.createElement("div");
   prompt.className = "prompt";
   prompt.textContent = "Choose which tiles to chow with:";
-  controlsEl.appendChild(prompt);
+  centerActionsEl.appendChild(prompt);
   const options = findChowOptions(currentHand, tile);
   const row = document.createElement("div");
   row.className = "tile-row";
@@ -730,9 +799,9 @@ function renderChowPicker(tile, discarderName, canWin, canChow) {
   const back = document.createElement("button");
   back.className = "action secondary";
   back.textContent = "Back";
-  back.onclick = () => renderCallButtons(discarderName, tile, "", canWin, canChow);
-  controlsEl.appendChild(row);
-  controlsEl.appendChild(back);
+  back.onclick = () => renderCallButtons(discarderName, tile, "", canWin, canChow, canKong);
+  centerActionsEl.appendChild(row);
+  centerActionsEl.appendChild(back);
 }
 
 function renderGameOver(data) {
@@ -934,7 +1003,18 @@ function handleServerMessage(data) {
           sendMsg({type: "declare_win"});
           renderWaiting();
         };
-        controlsEl.appendChild(winBtn);
+        centerActionsEl.appendChild(winBtn);
+      }
+      for (const kongTile of data.kongOptions || []) {
+        const kongBtn = document.createElement("button");
+        kongBtn.className = "action";
+        kongBtn.appendChild(document.createTextNode("Kong "));
+        kongBtn.appendChild(createTileFace(kongTile, {mini: true}));
+        kongBtn.onclick = () => {
+          sendMsg({type: "declare_kong", tile: kongTile});
+          renderWaiting();
+        };
+        centerActionsEl.appendChild(kongBtn);
       }
       renderHand(currentHand, (tile) => {
         sendMsg({type: "discard", tile});
@@ -946,7 +1026,7 @@ function handleServerMessage(data) {
     }
     case "await_call": {
       const canChow = (data.isNextPlayer || data.canWin) && findChowOptions(currentHand, data.tile).length > 0;
-      renderCallButtons(seatNameFor(data.discarderIdx), data.tile, data.error || "", data.canWin, canChow);
+      renderCallButtons(seatNameFor(data.discarderIdx), data.tile, data.error || "", data.canWin, canChow, data.canKong);
       break;
     }
     case "call_closed": {
@@ -962,9 +1042,16 @@ function handleServerMessage(data) {
 }
 
 
+function playerName() {
+  const name = document.getElementById("nameInput").value.trim();
+  try { localStorage.setItem("mahjongName", name); } catch (e) {}
+  return name;
+}
+try { document.getElementById("nameInput").value = localStorage.getItem("mahjongName") || ""; } catch (e) {}
+
 document.getElementById("createBtn").onclick = () => {
   lobbyStatusEl.textContent = "Creating room…";
-  sendMsg({type: "create_room"});
+  sendMsg({type: "create_room", name: playerName()});
 };
 
 document.getElementById("joinBtn").onclick = () => {
@@ -974,7 +1061,7 @@ document.getElementById("joinBtn").onclick = () => {
     return;
   }
   lobbyStatusEl.textContent = "Joining room…";
-  sendMsg({type: "join_room", room: code});
+  sendMsg({type: "join_room", room: code, name: playerName()});
 };
 
 connect();

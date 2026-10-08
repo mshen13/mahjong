@@ -20,6 +20,13 @@ CALL_BANNER_SECONDS = 3.3
 BOT_DRAW_PAUSE = 0.6
 
 
+def clean_name(raw, fallback, taken=()):
+    name = " ".join(str(raw or "").split())[:16] or fallback
+    if name.lower() in (t.lower() for t in taken):
+        name = f"{name} (2)"
+    return name
+
+
 def is_suited(tile):
     return len(tile) == 2 and tile[0].isdigit() and tile[1] in SUITS
 
@@ -224,6 +231,29 @@ async def broadcast_call_banner(room, seat_idx, kind, tiles):
     await broadcast(room, {"type": "call_banner", "seat": seat_idx, "kind": kind, "tiles": tiles})
 
 
+def own_kong_options(player):
+    """Tiles this player can kong on their own turn: four in hand, or a fourth for an exposed pong."""
+    options = [t for t in dict.fromkeys(player.hand) if player.hand.count(t) == 4]
+    for meld in player.melds:
+        if meld["kind"] == "pong" and meld["tiles"][0] in player.hand:
+            options.append(meld["tiles"][0])
+    return options
+
+
+def apply_own_kong(player, tile):
+    if player.hand.count(tile) == 4:
+        for _ in range(4):
+            player.hand.remove(tile)
+        player.melds.append({"kind": "kong", "tiles": [tile] * 4})
+        return
+    for meld in player.melds:
+        if meld["kind"] == "pong" and meld["tiles"][0] == tile:
+            player.hand.remove(tile)
+            meld["kind"] = "kong"
+            meld["tiles"] = [tile] * 4
+            return
+
+
 async def request_discard(room, player):
     fut = asyncio.get_event_loop().create_future()
     room.pending = {"kind": "discard", "seat": player.seat}
@@ -231,6 +261,7 @@ async def request_discard(room, player):
     room.pending_payload = {
         "type": "await_discard",
         "canWin": is_winning_hand(player.hand, len(player.melds)),
+        "kongOptions": own_kong_options(player),
     }
     await send_json(player.ws, room.pending_payload)
     tile = await fut
@@ -251,6 +282,7 @@ async def request_call_action(room, discarder_idx, tile, player, is_next_player)
                 "tile": tile,
                 "isNextPlayer": is_next_player,
                 "canWin": is_winning_hand(player.hand + [tile], len(player.melds)),
+                "canKong": player.hand.count(tile) == 3,
                 "error": error,
             }
             room.pending_calls[player.seat] = {"future": fut, "payload": payload}
@@ -266,6 +298,12 @@ async def request_call_action(room, discarder_idx, tile, player, is_next_player)
                 if is_winning_hand(player.hand + [tile], len(player.melds)):
                     return {"type": "win"}
                 error = "That tile doesn't complete your hand."
+                continue
+
+            if action == "kong":
+                if player.hand.count(tile) == 3:
+                    return {"type": "kong"}
+                error = "You can't kong this — you need three of it in your hand."
                 continue
 
             if action == "pong":
@@ -339,8 +377,8 @@ async def check_calls(room, discarder_idx, tile):
             return {"kind": "win", "idx": idx}
 
     # A pong outranks a chow, so a bot's pong beats a human's chow.
-    if human_call and human_call["result"]["type"] == "pong":
-        return {"kind": "pong", "idx": human_call["idx"]}
+    if human_call and human_call["result"]["type"] in ("pong", "kong"):
+        return {"kind": human_call["result"]["type"], "idx": human_call["idx"]}
 
     for idx in order:
         p = room.players[idx]
@@ -364,6 +402,10 @@ def apply_meld(player, discard, kind, extra):
         player.hand.remove(discard)
         player.hand.remove(discard)
         player.melds.append({"kind": "pong", "tiles": [discard, discard, discard]})
+    elif kind == "kong":
+        for _ in range(3):
+            player.hand.remove(discard)
+        player.melds.append({"kind": "kong", "tiles": [discard] * 4})
     elif kind == "chow":
         t1, t2 = extra
         player.hand.remove(t1)
@@ -426,6 +468,14 @@ async def run_game(room):
             if discard is None:  # declared a self-draw win
                 await end_game(room, current_idx, "self-draw")
                 return
+            if isinstance(discard, dict):  # declared a kong; draw a replacement, then discard
+                apply_own_kong(player, discard["kong"])
+                await broadcast_log(room, [player.name, " calls KONG on ", {"tile": discard["kong"]}, "!"])
+                await broadcast_state(room)
+                await broadcast_call_banner(room, current_idx, "kong", player.melds[-1]["tiles"])
+                await asyncio.sleep(CALL_BANNER_SECONDS)
+                needs_draw = True
+                continue
         else:
             discard = ai_discard_choice(player.hand)
 
@@ -454,7 +504,7 @@ async def run_game(room):
             await broadcast_call_banner(room, call["idx"], call["kind"], new_meld["tiles"])
             await asyncio.sleep(CALL_BANNER_SECONDS)
             current_idx = call["idx"]
-            needs_draw = False
+            needs_draw = call["kind"] == "kong"  # a kong is followed by a replacement draw
         else:
             current_idx = (current_idx + 1) % 4
             needs_draw = True
@@ -469,6 +519,7 @@ async def handle_message(ws, ctx, data):
         ROOMS[code] = room
         room.players[0].ws = ws
         room.players[0].token = secrets.token_urlsafe(16)
+        room.players[0].name = clean_name(data.get("name"), SEAT_NAMES[0])
         ctx["room"] = room
         ctx["seat"] = 0
         await send_json(ws, {
@@ -494,6 +545,9 @@ async def handle_message(ws, ctx, data):
             return
         room.players[1].ws = ws
         room.players[1].token = secrets.token_urlsafe(16)
+        room.players[1].name = clean_name(
+            data.get("name"), SEAT_NAMES[1], taken=[room.players[0].name, "Bot A", "Bot B"]
+        )
         ctx["room"] = room
         ctx["seat"] = 1
         await send_json(ws, {
@@ -554,6 +608,14 @@ async def handle_message(ws, ctx, data):
             player = room.players[seat]
             if is_winning_hand(player.hand, len(player.melds)) and not room.pending_future.done():
                 room.pending_future.set_result(None)
+        return
+
+    if msg_type == "declare_kong":
+        if room.pending == {"kind": "discard", "seat": seat}:
+            player = room.players[seat]
+            tile = data.get("tile")
+            if tile in own_kong_options(player) and not room.pending_future.done():
+                room.pending_future.set_result({"kong": tile})
         return
 
     if msg_type == "discard":
